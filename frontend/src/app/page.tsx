@@ -1,46 +1,63 @@
-'use client';
+"use client";
+import { useState, useEffect } from 'react';
+import axios from 'axios';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
-import { useEffect, useState } from "react";
-import axios from "axios";
-
-type ProphetPrediction = {
-  ds: string;
-  yhat: number;
-  yhat_lower: number;
-  yhat_upper: number;
-};
-
-export default function Home() {
-  const [prophetData, setProphetData] = useState<ProphetPrediction[]>([]);
-  const [xgbData, setXgbData] = useState<number[]>([]);
+const Home = () => {
+  const [prophetData, setProphetData] = useState([]);
+  const [xgboostData, setXgboostData] = useState([]);
 
   useEffect(() => {
-    axios.get("http://localhost:8000/predict/prophet").then((res) => {
-      setProphetData(res.data);
-    });
-    axios.get("http://localhost:8000/predict/xgboost").then((res) => {
-      setXgbData(res.data.predictions);
-    });
+    // Fetch Prophet predictions
+    axios.get('http://127.0.0.1:8000/predict/prophet')
+      .then(response => {
+        setProphetData(response.data.predictions);
+      })
+      .catch(error => {
+        console.error('Error fetching Prophet data:', error);
+      });
+
+    // Fetch XGBoost predictions
+    axios.get('http://127.0.0.1:8000/predict/xgboost')
+      .then(response => {
+        setXgboostData(response.data.predictions);
+      })
+      .catch(error => {
+        console.error('Error fetching XGBoost data:', error);
+      });
   }, []);
 
   return (
-    <main style={{ padding: "2rem" }}>
+    <div>
       <h1>📈 GOOG Stock Predictions</h1>
+      
       <h2>Prophet (Next 30 Days)</h2>
-      <ul>
-        {prophetData.map((entry) => (
-          <li key={entry.ds}>
-            {entry.ds}: {entry.yhat.toFixed(2)} (±{(entry.yhat_upper - entry.yhat_lower).toFixed(2)})
-          </li>
-        ))}
-      </ul>
+      <ResponsiveContainer width="100%" height={400}>
+        <LineChart data={prophetData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="ds" />
+          <YAxis />
+          <Tooltip />
+          <Legend />
+          <Line type="monotone" dataKey="yhat" stroke="#8884d8" />
+          <Line type="monotone" dataKey="yhat_upper" stroke="#82ca9d" />
+          <Line type="monotone" dataKey="yhat_lower" stroke="#ffc658" />
+        </LineChart>
+      </ResponsiveContainer>
 
       <h2>XGBoost (Next 30 Days)</h2>
-      <ul>
-        {xgbData.map((val, idx) => (
-          <li key={idx}>Day {idx + 1}: {val.toFixed(2)}</li>
-        ))}
-      </ul>
-    </main>
+      <ResponsiveContainer width="100%" height={400}>
+        <LineChart data={xgboostData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="day" />
+          <YAxis />
+          <Tooltip />
+          <Legend />
+          <Line type="monotone" dataKey="prediction" stroke="#82ca9d" />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
   );
-}
+};
+
+export default Home;
