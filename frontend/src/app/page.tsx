@@ -39,9 +39,7 @@ const Home = () => {
           <YAxis />
           <Tooltip />
           <Legend />
-          <Line type="monotone" dataKey="yhat" stroke="#8884d8" />
-          <Line type="monotone" dataKey="yhat_upper" stroke="#82ca9d" />
-          <Line type="monotone" dataKey="yhat_lower" stroke="#ffc658" />
+          <Line type="monotone" dataKey="y" stroke="#8884d8" dot={false} />
         </LineChart>
       </ResponsiveContainer>
 

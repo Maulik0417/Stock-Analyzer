@@ -1,113 +1,161 @@
 import yfinance as yf
 import pandas as pd
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from prophet import Prophet
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 import talib as ta
-from typing import List
 import numpy as np
+import traceback
+from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime, timedelta
 
-# Initialize FastAPI
 app = FastAPI()
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    # Add other origins if needed
+]
 
-# Download stock data
-def download_data(ticker="GOOG", start="2015-01-01", end="2025-01-01"):
-    df = yf.download(ticker, start=start, end=end)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  # or ["*"] to allow all (not recommended for prod)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+def download_data(ticker="GOOG", start="2015-01-01", end=None):
+    if end is None:
+        end = datetime.now().strftime('%Y-%m-%d')  # today, dynamic
+    df = yf.download(ticker, start=start, end=end, auto_adjust=True)
+    if df.empty:
+        raise ValueError("No data downloaded for the ticker.")
+
+    # Flatten multiindex columns if any
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = ['_'.join(col).strip() for col in df.columns.values]
+
+    # Find the close column by searching possible names
+    possible_close_cols = [col for col in df.columns if 'close' in col.lower()]
+    if not possible_close_cols:
+        raise ValueError("No close price column found in the data")
+    # Rename the first found close column to 'Close'
+    df = df.rename(columns={possible_close_cols[0]: 'Close'})
+
     return df
 
-# Feature engineering: Add lag features
+
 def create_lag_features(data, lag=5):
     for i in range(1, lag + 1):
         data[f"lag_{i}"] = data['Close'].shift(i)
     data = data.dropna()
     return data
 
-# Add technical indicators using TA-Lib
-# Fix in the add_technical_indicators function
 def add_technical_indicators(df):
-    # Ensure the Close column is a 1D numpy array
-    close_prices = df['Close'].values  # Extract values as a 1D numpy array
+    if 'Close' not in df.columns or df['Close'].empty:
+        raise ValueError("Missing or empty 'Close' column for technical indicators")
 
-    # Calculate the Simple Moving Average (SMA) over 5 days
+    close_prices = np.asarray(df['Close']).ravel()
+
     df['SMA'] = ta.SMA(close_prices, timeperiod=5)
-
-    # Calculate the Relative Strength Index (RSI) over 14 days
     df['RSI'] = ta.RSI(close_prices, timeperiod=14)
+    macd, macd_signal, _ = ta.MACD(close_prices, fastperiod=12, slowperiod=26, signalperiod=9)
+    df['MACD'] = macd
+    df['MACD_signal'] = macd_signal
 
     return df
 
-# Train the XGBoost model
 def train_xgboost_model(df):
-    # Use lag features and technical indicators as features
     features = ['lag_1', 'lag_2', 'lag_3', 'lag_4', 'lag_5', 'SMA', 'RSI', 'MACD', 'MACD_signal']
     target = 'Close'
 
-    # Create features and target
+    df = df.dropna(subset=features + [target])
+
     X = df[features]
     y = df[target]
 
-    # Split into train/test sets
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-    # Train the XGBoost model
     model = xgb.XGBRegressor(n_estimators=100, max_depth=5)
     model.fit(X_train, y_train)
     return model
 
-# Predict using Prophet
+from datetime import timedelta
+
 @app.get("/predict/prophet")
 async def predict_prophet():
-    df = download_data()
-    df_prophet = df[['Close']].reset_index()
-    df_prophet = df_prophet.rename(columns={'Date': 'ds', 'Close': 'y'})
-    if isinstance(df_prophet['y'], pd.DataFrame):
-        df_prophet['y'] = df_prophet['y'].squeeze()  # Convert to Series if it's a DataFrame
-    df_prophet['y'] = pd.to_numeric(df_prophet['y'], errors='coerce')
+    try:
+        df = download_data()
 
-    # Train Prophet model
-    model = Prophet()
-    model.fit(df_prophet)
+        # Prepare df for Prophet
+        df_prophet = df.reset_index()[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
+        df_prophet['ds'] = pd.to_datetime(df_prophet['ds'])
+        df_prophet['y'] = pd.to_numeric(df_prophet['y'], errors='coerce')
+        df_prophet = df_prophet.dropna(subset=['y'])
 
-    # Make a future dataframe for the next 30 days
-    future = model.make_future_dataframe(df_prophet, periods=30)
-    forecast = model.predict(future)
+        model = Prophet()
+        model.fit(df_prophet)
 
-    # Return the forecast results as a dictionary
-    forecast_data = forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail(30).to_dict(orient='records')
-    return {"predictions": forecast_data}
+        # Get last date from data
+        last_date = df_prophet['ds'].max()
 
-# Predict using XGBoost
+        # Select past 10 days (including last_date)
+        past_start_date = last_date - timedelta(days=9)  # 10 days inclusive
+        past_data = df_prophet[df_prophet['ds'] >= past_start_date].copy()
+        past_data['type'] = 'actual'  # mark as actual
+
+        # Predict next 20 days
+        future = model.make_future_dataframe(periods=20)
+        forecast = model.predict(future)
+        future_forecast = forecast[forecast['ds'] > last_date][['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
+        future_forecast['type'] = 'forecast'  # mark as forecast
+
+        # Combine past actual and future forecast
+        combined = pd.concat([past_data[['ds', 'y', 'type']], 
+                              future_forecast.rename(columns={'yhat': 'y'})[['ds', 'y', 'type']]], ignore_index=True)
+
+        # Convert to records and return
+        results = combined.to_dict(orient='records')
+        return {"predictions": results}
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/predict/xgboost")
 async def predict_xgboost():
-    df = download_data()
+    try:
+        df = download_data()
 
-    # Add lag features and technical indicators
-    df = create_lag_features(df)
-    df = add_technical_indicators(df)
+        df = create_lag_features(df)
+        df = add_technical_indicators(df)
+        df = df.dropna(subset=['SMA', 'RSI', 'MACD', 'MACD_signal'])
 
-    # Train the XGBoost model
-    model = train_xgboost_model(df)
+        model = train_xgboost_model(df)
 
-    # Prepare the features for prediction
-    future_data = df.tail(1)[['lag_1', 'lag_2', 'lag_3', 'lag_4', 'lag_5', 'SMA', 'RSI', 'MACD', 'MACD_signal']]
+        last_row = df.iloc[-1]
 
-    # Make predictions for the next 30 days
-    predictions = []
-    for _ in range(30):
-        pred = model.predict(future_data)
-        predictions.append(pred[0])
-        # Update the future_data with the new predicted value
-        future_data = future_data.copy()
-        future_data['lag_1'] = future_data['lag_2']
-        future_data['lag_2'] = future_data['lag_3']
-        future_data['lag_3'] = future_data['lag_4']
-        future_data['lag_4'] = future_data['lag_5']
-        future_data['lag_5'] = pred
+        predictions = []
+        future_data = last_row[['lag_1', 'lag_2', 'lag_3', 'lag_4', 'lag_5', 'SMA', 'RSI', 'MACD', 'MACD_signal']].to_frame().T
 
-        # Recalculate technical indicators for the new data
-        future_data = add_technical_indicators(future_data)
+        for _ in range(30):
+            pred = model.predict(future_data)[0]
+            predictions.append(pred)
 
-    # Return the predictions as a dictionary
-    prediction_data = [{"day": i+1, "prediction": float(pred)} for i, pred in enumerate(predictions)]
-    return {"predictions": prediction_data}
+            # Shift lag features
+            future_data = future_data.copy()
+            future_data['lag_1'] = future_data['lag_2']
+            future_data['lag_2'] = future_data['lag_3']
+            future_data['lag_3'] = future_data['lag_4']
+            future_data['lag_4'] = future_data['lag_5']
+            future_data['lag_5'] = pred
+
+            # Technical indicators remain same (approximate)
+
+        prediction_data = [{"day": i+1, "prediction": float(pred)} for i, pred in enumerate(predictions)]
+        return {"predictions": prediction_data}
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
