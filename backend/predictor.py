@@ -3,6 +3,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 import xgboost as xgb
 import talib as ta
+import numpy as np
 
 def add_technical_indicators(df):
     if 'Close' not in df.columns or df['Close'].empty:

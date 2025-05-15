@@ -25,7 +25,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def download_data(ticker="GOOG", start="2015-01-01", end=None):
+def download_data(ticker="MSFT", start="2015-01-01", end=None):
     if end is None:
         end = datetime.now().strftime('%Y-%m-%d')  # today, dynamic
     df = yf.download(ticker, start=start, end=end, auto_adjust=True)
