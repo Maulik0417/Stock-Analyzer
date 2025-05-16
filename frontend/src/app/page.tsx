@@ -76,11 +76,19 @@ const xgboostYDomain = useMemo(() => {
       <ResponsiveContainer width="100%" height={400}>
         <LineChart data={xgboostData}>
           <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="day" />
+       <XAxis
+        dataKey="ds"
+        tickFormatter={(tick) => {
+          const date = new Date(tick);
+          return `${date.toLocaleString("default", { month: "short" })}-${date.getDate()}`;
+        }}
+        interval={1}
+      />
+<YAxis domain={xgboostYDomain} />
           <YAxis />
           <Tooltip />
           <Legend />
-          <Line type="monotone" dataKey="prediction" stroke="#82ca9d" />
+          <Line type="monotone" dataKey="prediction" stroke="#82ca9d" dot={false} />
         </LineChart>
       </ResponsiveContainer>
     </div>

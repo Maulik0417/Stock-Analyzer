@@ -9,6 +9,8 @@ import numpy as np
 import traceback
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
+from pandas.tseries.offsets import BDay
+
 
 app = FastAPI()
 origins = [
@@ -67,7 +69,7 @@ def add_technical_indicators(df):
     return df
 
 def train_xgboost_model(df):
-    features = ['lag_1', 'lag_2', 'lag_3', 'lag_4', 'lag_5', 'SMA', 'RSI', 'MACD', 'MACD_signal']
+    features = ['lag_1', 'lag_2', 'lag_3', 'lag_4', 'lag_5']
     target = 'Close'
 
     df = df.dropna(subset=features + [target])
@@ -101,12 +103,12 @@ async def predict_prophet():
         last_date = df_prophet['ds'].max()
 
         # Select past 10 days (including last_date)
-        past_start_date = last_date - timedelta(days=9)  # 10 days inclusive
+        past_start_date = last_date - BDay(9)
         past_data = df_prophet[df_prophet['ds'] >= past_start_date].copy()
         past_data['type'] = 'actual'  # mark as actual
 
         # Predict next 20 days
-        future = model.make_future_dataframe(periods=20)
+        future = model.make_future_dataframe(periods=20, freq='B')  # 'B' = business day frequency
         forecast = model.predict(future)
         future_forecast = forecast[forecast['ds'] > last_date][['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
         future_forecast['type'] = 'forecast'  # mark as forecast
@@ -134,27 +136,42 @@ async def predict_xgboost():
 
         model = train_xgboost_model(df)
 
-        last_row = df.iloc[-1]
+        # Get last 10 business days of actual data
+        df = df.reset_index()
+        df['ds'] = pd.to_datetime(df['Date'])
+        last_actuals = df[['ds', 'Close']].dropna().sort_values('ds').tail(10)
+        last_actuals = last_actuals.rename(columns={'Close': 'prediction'})
+        last_actuals['type'] = 'actual'
 
-        predictions = []
+        # Start from the latest known row to predict future
+        last_row = df.iloc[-1]
+        last_date = last_row['ds']
         future_data = last_row[['lag_1', 'lag_2', 'lag_3', 'lag_4', 'lag_5', 'SMA', 'RSI', 'MACD', 'MACD_signal']].to_frame().T
 
-        for _ in range(30):
+        # Predict next 20 business days
+        future_predictions = []
+        for i in range(20):
+            feature_cols = ['lag_1', 'lag_2', 'lag_3', 'lag_4', 'lag_5']
+            future_data = future_data[feature_cols].astype(float)
             pred = model.predict(future_data)[0]
-            predictions.append(pred)
+            pred_date = last_date + BDay(i + 1)  # +1 to skip current day
+            future_predictions.append({
+                "ds": pred_date.strftime('%Y-%m-%d'),
+                "prediction": float(pred),
+                "type": "forecast"
+            })
 
-            # Shift lag features
+            # Shift lags
             future_data = future_data.copy()
             future_data['lag_1'] = future_data['lag_2']
             future_data['lag_2'] = future_data['lag_3']
             future_data['lag_3'] = future_data['lag_4']
             future_data['lag_4'] = future_data['lag_5']
-            future_data['lag_5'] = pred
+            future_data['lag_5'] = pred  # use new prediction as latest lag
 
-            # Technical indicators remain same (approximate)
-
-        prediction_data = [{"day": i+1, "prediction": float(pred)} for i, pred in enumerate(predictions)]
-        return {"predictions": prediction_data}
+        # Combine and return
+        combined = pd.concat([last_actuals, pd.DataFrame(future_predictions)], ignore_index=True)
+        return {"predictions": combined.to_dict(orient="records")}
 
     except Exception as e:
         traceback.print_exc()

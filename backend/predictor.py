@@ -46,25 +46,34 @@ def xgboost_forecast(df: pd.DataFrame, days: int = 30):
     df = df.copy()
     df["y"] = df["Close"]
     df["y_shifted"] = df["y"].shift(-1)
+
     df = add_technical_indicators(df)
     df.dropna(inplace=True)
 
     features = ['y', 'SMA', 'RSI', 'MACD', 'MACD_signal']
-    X = df[features].values
-    y = df["y_shifted"].values
+    X = df[features]
+    y = df["y_shifted"]
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
     model = xgb.XGBRegressor()
     model.fit(X_train, y_train)
 
+    # Start from the last known price
+    full_close_series = df['y'].tolist()
     preds = []
-    last_value = X[-1]
 
     for _ in range(days):
-        next_pred = model.predict([last_value])[0]
+        # Create a DataFrame with the latest prices
+        temp_df = pd.DataFrame({'Close': full_close_series})
+        temp_df = add_technical_indicators(temp_df)
+        temp_df.dropna(inplace=True)
+
+        last_features = temp_df.iloc[-1][['Close', 'SMA', 'RSI', 'MACD', 'MACD_signal']].values
+        next_pred = model.predict([last_features])[0]
         preds.append(next_pred)
-        # Update last_value input: shift predicted y, keep other indicators the same
-        last_value = [next_pred] + list(last_value[1:])
+
+        # Append the prediction to the price series
+        full_close_series.append(next_pred)
 
     return preds
