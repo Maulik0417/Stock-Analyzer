@@ -27,7 +27,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def download_data(ticker="MSFT", start="2015-01-01", end=None):
+def download_data(ticker="AAPL", start="2015-01-01", end=None):
     if end is None:
         end = datetime.now().strftime('%Y-%m-%d')  # today, dynamic
     df = yf.download(ticker, start=start, end=end, auto_adjust=True)
@@ -143,31 +143,47 @@ async def predict_xgboost():
         last_actuals = last_actuals.rename(columns={'Close': 'prediction'})
         last_actuals['type'] = 'actual'
 
-        # Start from the latest known row to predict future
-        last_row = df.iloc[-1]
-        last_date = last_row['ds']
-        future_data = last_row[['lag_1', 'lag_2', 'lag_3', 'lag_4', 'lag_5', 'SMA', 'RSI', 'MACD', 'MACD_signal']].to_frame().T
-
-        # Predict next 20 business days
+        # Prepare rolling DataFrame for iterative prediction
+        rolling_df = df.copy()
+        last_date = rolling_df['ds'].iloc[-1]
         future_predictions = []
+
         for i in range(20):
+            # Get last 5 closes for lag features
+            last_closes = rolling_df['Close'].iloc[-5:].tolist()
+            lag_dict = {f'lag_{j+1}': last_closes[-(j+1)] for j in range(5)}
+
+            # Create a temp DataFrame for indicators
+            temp_row = {'Close': last_closes[-1]}
+            temp_df = pd.concat([rolling_df[['Close']], pd.DataFrame([temp_row])], ignore_index=True)
+            temp_df = add_technical_indicators(temp_df)
+            last_indicators = temp_df.iloc[-1][['SMA', 'RSI', 'MACD', 'MACD_signal']].to_dict()
+
+            # Prepare features for prediction
+            features = {**lag_dict, **last_indicators}
             feature_cols = ['lag_1', 'lag_2', 'lag_3', 'lag_4', 'lag_5']
-            future_data = future_data[feature_cols].astype(float)
-            pred = model.predict(future_data)[0]
-            pred_date = last_date + BDay(i + 1)  # +1 to skip current day
+            X_pred = pd.DataFrame([features])[feature_cols]
+
+            pred = model.predict(X_pred)[0]
+            pred_date = last_date + BDay(i + 1)
+
             future_predictions.append({
                 "ds": pred_date.strftime('%Y-%m-%d'),
                 "prediction": float(pred),
                 "type": "forecast"
             })
 
-            # Shift lags
-            future_data = future_data.copy()
-            future_data['lag_1'] = future_data['lag_2']
-            future_data['lag_2'] = future_data['lag_3']
-            future_data['lag_3'] = future_data['lag_4']
-            future_data['lag_4'] = future_data['lag_5']
-            future_data['lag_5'] = pred  # use new prediction as latest lag
+            # Append prediction to rolling_df for next iteration
+            new_row = {
+                'ds': pred_date,
+                'Close': pred
+            }
+            # Add lag features and indicators for completeness (not strictly needed)
+            for k, v in lag_dict.items():
+                new_row[k] = v
+            for k, v in last_indicators.items():
+                new_row[k] = v
+            rolling_df = pd.concat([rolling_df, pd.DataFrame([new_row])], ignore_index=True)
 
         # Combine and return
         combined = pd.concat([last_actuals, pd.DataFrame(future_predictions)], ignore_index=True)
