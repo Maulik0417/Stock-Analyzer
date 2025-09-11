@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pandas
+numpy
+yfinance
+scikit-learn
+tensorflow
+prophet
+pytz
+python-dateutil

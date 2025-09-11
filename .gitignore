@@ -136,3 +136,6 @@ dist
 .pnp.*
 
 .DS_Store
+
+/Backend/venv/
+/Backend/__pycache__/
